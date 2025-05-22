@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>RAGAS Retrieval Evaluation Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        h1, h2 { color: #2c3e50; }
+        .summary-table, .comparison-table { border-collapse: collapse; width: 100%; margin-bottom: 40px; }
+        .summary-table th, .summary-table td, .comparison-table th, .comparison-table td { border: 1px solid #ccc; padding: 6px 10px; }
+        .summary-table th, .comparison-table th { background: #f0f4f8; }
+        .explanation { background: #f9f9f9; border-left: 4px solid #3498db; padding: 10px 20px; margin-bottom: 30px; }
+        .file-inputs { margin-bottom: 30px; }
+        .file-inputs label { margin-right: 20px; }
+        .filter-bar { margin-bottom: 20px; }
+        .filter-bar input { padding: 4px 8px; }
+        .highlight { background: #eaf6ff; }
+        .small { font-size: 0.95em; color: #555; }
+        .chart-container { width: 100%; max-width: 700px; margin: 30px 0; }
+        .question-link { color: #2980b9; cursor: pointer; text-decoration: underline; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body>
+    <h1>RAGAS Retrieval Evaluation Report</h1>
+    <div class="explanation">
+        <b>Metrics explained:</b><br>
+        <ul>
+            <li><b>faithfulness</b>: How factually correct the answer is with respect to the retrieved context.</li>
+            <li><b>answer_relevancy</b>: How relevant the answer is to the user's question.</li>
+            <li><b>context_precision</b>: How much of the retrieved context is actually useful for answering the question.</li>
+            <li><b>context_recall</b>: How much of the necessary context for answering the question was actually retrieved.</li>
+            <li><b>bertscore_f1</b>: Semantic similarity between the generated answer and the reference answer.</li>
+        </ul>
+        <b>Conclusion:</b> Hybrid retrieval is best overall, with the highest faithfulness, context precision, and context recall.
+    </div>
+    <div class="file-inputs">
+        <div id="drop-area" style="border: 2px dashed #3498db; border-radius: 8px; padding: 24px; text-align: center; background: #f8fbff; cursor: pointer;">
+            <b>Drag & drop your 3 CSV files here</b><br>
+            <span style="font-size:0.95em; color:#888;">(output_bm25.csv, output_vector.csv, output_hybrid.csv)</span><br>
+            <input type="file" id="csvfiles" accept=".csv" multiple style="display:none;">
+            <div id="file-list" style="margin-top:10px;"></div>
+            <button id="loadBtn" onclick="loadCSVs()" style="margin-top:10px; display:none;">Load & Compare</button>
+        </div>
+    </div>
+    <div id="summary"></div>
+    <div class="chart-container">
+        <canvas id="summaryChart"></canvas>
+    </div>
+    <div id="filter-bar" class="filter-bar" style="display:none;">
+        <label>Filter questions: <input type="text" id="questionFilter" oninput="filterQuestions()"></label>
+    </div>
+    <div id="comparison"></div>
+    <script>
+        let allData = {};
+        let questions = [];
+        let metrics = [
+            'faithfulness', 'answer_relevancy', 'context_precision', 'context_recall', 'bertscore_f1'
+        ];
+        let retrievalTypes = ['bm25', 'vector', 'hybrid'];
+        let summaryChart, questionChart;
+        let openChartRow = null;
+        let openChartIdx = null;
+        let selectedFiles = {};
+        let fileAssignments = {};
+
+        // Drag and drop logic
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('csvfiles');
+        const fileList = document.getElementById('file-list');
+        const loadBtn = document.getElementById('loadBtn');
+        dropArea.addEventListener('click', () => {
+            if (!(selectedFiles['bm25'] && selectedFiles['vector'] && selectedFiles['hybrid'])) {
+                fileInput.click();
+            }
+        });
+        dropArea.addEventListener('dragover', e => { e.preventDefault(); dropArea.style.background = '#eaf6ff'; });
+        dropArea.addEventListener('dragleave', e => { e.preventDefault(); dropArea.style.background = '#f8fbff'; });
+        dropArea.addEventListener('drop', handleDrop, false);
+        fileInput.addEventListener('change', handleFileSelect, false);
+
+        function handleDrop(e) {
+            e.preventDefault();
+            dropArea.style.background = '#f8fbff';
+            handleFiles(e.dataTransfer.files);
+        }
+        function handleFileSelect(e) {
+            handleFiles(e.target.files);
+        }
+        function handleFiles(files) {
+            // Reset
+            selectedFiles = {};
+            fileAssignments = {};
+            // Convert FileList to Array
+            const fileArr = Array.from(files);
+            if (fileArr.length !== 3) {
+                Swal.fire('Please select or drop exactly 3 CSV files.');
+                updateFileList();
+                return;
+            }
+            // Prompt user to assign each file to a retriever type
+            assignFilesToRetrievers(fileArr);
+        }
+
+        async function assignFilesToRetrievers(fileArr) {
+            let availableTypes = [...retrievalTypes];
+            for (let file of fileArr) {
+                const { value: type } = await Swal.fire({
+                    title: `Assign retriever type for <b>${file.name}</b>`,
+                    input: 'select',
+                    inputOptions: availableTypes.reduce((acc, t) => { acc[t] = t; return acc; }, {}),
+                    inputPlaceholder: 'Select retriever type',
+                    showCancelButton: false,
+                    allowOutsideClick: false,
+                    inputValidator: (value) => {
+                        if (!value) return 'You need to select a retriever type!';
+                    }
+                });
+                selectedFiles[type] = file;
+                fileAssignments[file.name] = type;
+                // Remove assigned type from availableTypes
+                availableTypes = availableTypes.filter(t => t !== type);
+            }
+            updateFileList();
+        }
+
+        function updateFileList() {
+            let html = '';
+            retrievalTypes.forEach(type => {
+                if (selectedFiles[type]) {
+                    html += `<div style='color: #27ae60;'>✔ ${selectedFiles[type].name} → <b>${type}</b></div>`;
+                } else {
+                    html += `<div style='color: #c0392b;'>✖ No file assigned for <b>${type}</b></div>`;
+                }
+            });
+            fileList.innerHTML = html;
+            if (selectedFiles['bm25'] && selectedFiles['vector'] && selectedFiles['hybrid']) {
+                loadBtn.style.display = '';
+            } else {
+                loadBtn.style.display = 'none';
+            }
+        }
+
+        function loadCSVs() {
+            if (!(selectedFiles['bm25'] && selectedFiles['vector'] && selectedFiles['hybrid'])) {
+                Swal.fire('Please assign all three retriever types to files.');
+                return;
+            }
+            allData = {};
+            let loaded = 0;
+            ['bm25','vector','hybrid'].forEach(type => {
+                const file = selectedFiles[type];
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        // Filter out rows with empty user_input
+                        allData[type] = results.data.filter(row => row.user_input && row.user_input.trim().length > 0);
+                        loaded++;
+                        if (loaded === 3) {
+                            processData();
+                        }
+                    }
+                });
+            });
+        }
+
+        function processData() {
+            // Only include non-empty user_input values (no strict question mark filter)
+            questions = Array.from(new Set(
+                [].concat(...retrievalTypes.map(t =>
+                    allData[t]
+                        .map(row => row.user_input)
+                        .filter(q => q && q.trim().length > 0)
+                ))
+            ));
+
+            if (questions.length === 0) {
+                document.getElementById('comparison').innerHTML = '<div style="color:red;">No questions found in the loaded CSVs.</div>';
+                document.getElementById('filter-bar').style.display = 'none';
+                return;
+            }
+
+            // --- SUMMARY TABLE ---
+            let summaryHTML = '<h2>Summary Table (Averages by Retrieval Type)</h2>';
+            summaryHTML += '<table class="summary-table"><tr><th>Retrieval Type</th>';
+            metrics.forEach(m => summaryHTML += `<th>${m}</th>`);
+            summaryHTML += '</tr>';
+            let summaryData = [];
+            retrievalTypes.forEach(type => {
+                const rows = allData[type];
+                summaryHTML += `<tr><td>${type}</td>`;
+                let rowData = [];
+                metrics.forEach(m => {
+                    const vals = rows.map(r => parseFloat(r[m])).filter(v => !isNaN(v));
+                    const mean = vals.length ? (vals.reduce((a,b) => a+b,0)/vals.length).toFixed(4) : '';
+                    summaryHTML += `<td>${mean}</td>`;
+                    rowData.push(mean ? parseFloat(mean) : 0);
+                });
+                summaryHTML += '</tr>';
+                summaryData.push(rowData);
+            });
+            summaryHTML += '</table>';
+            document.getElementById('summary').innerHTML = summaryHTML;
+            drawSummaryChart(summaryData);
+
+            // --- PER-QUESTION COMPARISON TABLE ---
+            let compHTML = '<h2>Per-Question Comparison</h2>';
+            compHTML += '<table class="comparison-table" id="compTable"><thead><tr><th>Question</th><th>Retriever</th><th>Answer</th>';
+            metrics.forEach(m => compHTML += `<th>${m}</th>`);
+            compHTML += '</tr></thead><tbody>';
+            questions.forEach((q, idx) => {
+                retrievalTypes.forEach((type, tIdx) => {
+                    const row = allData[type].find(r => r.user_input === q) || {};
+                    compHTML += '<tr class="main-row">';
+                    if (tIdx === 0) {
+                        compHTML += `<td class="question-cell" rowspan="3"><span class="question-link" style="cursor:pointer;color:#2980b9;text-decoration:underline;" onclick="toggleQuestionChart(this, '${encodeURIComponent(q)}', ${idx})">${q}</span></td>`;
+                    }
+                    compHTML += `<td>${type}</td>`;
+                    compHTML += `<td>${row.response ? row.response : ''}</td>`;
+                    metrics.forEach(m => {
+                        compHTML += `<td>${row[m] ? parseFloat(row[m]).toFixed(4) : ''}</td>`;
+                    });
+                    compHTML += '</tr>';
+                });
+            });
+            compHTML += '</tbody></table>';
+            document.getElementById('comparison').innerHTML = compHTML;
+            document.getElementById('filter-bar').style.display = '';
+        }
+
+        function drawSummaryChart(summaryData) {
+            const ctx = document.getElementById('summaryChart').getContext('2d');
+            if (summaryChart) summaryChart.destroy();
+            summaryChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: metrics,
+                    datasets: [
+                        {
+                            label: 'BM25',
+                            data: summaryData[0],
+                            backgroundColor: 'rgba(52, 152, 219, 0.7)'
+                        },
+                        {
+                            label: 'Vector',
+                            data: summaryData[1],
+                            backgroundColor: 'rgba(46, 204, 113, 0.7)'
+                        },
+                        {
+                            label: 'Hybrid',
+                            data: summaryData[2],
+                            backgroundColor: 'rgba(241, 196, 15, 0.7)'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'top' },
+                        title: { display: true, text: 'Average Metrics by Retrieval Type' }
+                    },
+                    scales: {
+                        y: { beginAtZero: false, min: 0.5, max: 1 }
+                    }
+                }
+            });
+        }
+
+        // Popup chart on question click using SweetAlert2
+        function toggleQuestionChart(link, q, idx) {
+            const question = decodeURIComponent(q);
+            // Create a container for the chart
+            const chartContainer = document.createElement('div');
+            chartContainer.innerHTML = `<canvas id="swalQuestionChart" width="600" height="350"></canvas>`;
+            Swal.fire({
+                title: 'Metric Comparison',
+                html: chartContainer,
+                width: 700,
+                showCloseButton: true,
+                showConfirmButton: false,
+                didOpen: () => {
+                    showQuestionChart(q, 'swalQuestionChart');
+                }
+            });
+        }
+
+        function showQuestionChart(q, chartId) {
+            const question = decodeURIComponent(q);
+            const data = retrievalTypes.map(type => {
+                const row = allData[type].find(r => r.user_input === question) || {};
+                return metrics.map(m => row[m] ? parseFloat(row[m]) : 0);
+            });
+            const ctx = document.getElementById(chartId).getContext('2d');
+            if (questionChart) questionChart.destroy();
+            questionChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: metrics,
+                    datasets: [
+                        {
+                            label: 'BM25',
+                            data: data[0],
+                            backgroundColor: 'rgba(52, 152, 219, 0.7)'
+                        },
+                        {
+                            label: 'Vector',
+                            data: data[1],
+                            backgroundColor: 'rgba(46, 204, 113, 0.7)'
+                        },
+                        {
+                            label: 'Hybrid',
+                            data: data[2],
+                            backgroundColor: 'rgba(241, 196, 15, 0.7)'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'top' },
+                        title: { display: true, text: 'Metric Comparison for Selected Question' }
+                    },
+                    scales: {
+                        y: { beginAtZero: false, min: 0.5, max: 1 }
+                    }
+                }
+            });
+        }
+
+        function filterQuestions() {
+            const filter = document.getElementById('questionFilter').value.toLowerCase();
+            const table = document.getElementById('compTable');
+            if (!table) return;
+            let row = 1; // skip header
+            while (row < table.rows.length) {
+                const mainRow = table.rows[row];
+                // The question cell is only in the first of the three rows (rowspan=3)
+                const questionCell = mainRow.cells[0];
+                let show = false;
+                if (questionCell && questionCell.classList.contains('question-cell')) {
+                    const qText = questionCell.textContent.toLowerCase();
+                    show = qText.includes(filter);
+                    // Show/hide this row and the next two rows (for the same question)
+                    for (let i = 0; i < 3; i++) {
+                        if (table.rows[row + i]) {
+                            table.rows[row + i].style.display = show ? '' : 'none';
+                        }
+                    }
+                    row += 3;
+                } else {
+                    // Should not happen, but just in case
+                    row++;
+                }
+            }
+        }
+        window.filterQuestions = filterQuestions;
+    </script>
+</body>
+</html>
