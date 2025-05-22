@@ -66,6 +66,32 @@
         let selectedFiles = {};
         let fileAssignments = {};
 
+        // Preload CSVs from URLs on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            const urls = {
+                bm25: 'https://ficiverson.github.io/contextual-retrieval-langchain-hybrid-search/tf-idf/output_bm25.csv',
+                vector: 'https://ficiverson.github.io/contextual-retrieval-langchain-hybrid-search/tf-idf/output_vector.csv',
+                hybrid: 'https://ficiverson.github.io/contextual-retrieval-langchain-hybrid-search/tf-idf/output_hybrid.csv'
+            };
+            let loaded = 0;
+            let preloadData = {};
+            for (const type of retrievalTypes) {
+                Papa.parse(urls[type], {
+                    download: true,
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        preloadData[type] = results.data.filter(row => row.user_input && row.user_input.trim().length > 0);
+                        loaded++;
+                        if (loaded === 3) {
+                            allData = preloadData;
+                            processData();
+                        }
+                    }
+                });
+            }
+        });
+
         // Drag and drop logic
         const dropArea = document.getElementById('drop-area');
         const fileInput = document.getElementById('csvfiles');

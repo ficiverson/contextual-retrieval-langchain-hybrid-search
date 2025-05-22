@@ -36,6 +36,15 @@ pip install --upgrade "langchain>=0.1.0" "pydantic>=2.0.0" rank_bm25 PyPDF2 raga
 3. **View Results:**
    - Outputs and evaluation metrics are saved in the `rag/` and `tf-idf/` directories.
 
+## Frontend: Interactive RAGAS Report
+
+You can explore the contextual retrieval evaluation results and interactively upload your own CSV files using the web frontend:
+
+👉 [RAGAS Retrieval Evaluation Report](https://ficiverson.github.io/contextual-retrieval-langchain-hybrid-search/ragas_report.html)
+
+- View the current results and metrics.
+- Drag & drop your own output CSVs (output_bm25.csv, output_vector.csv, output_hybrid.csv) to compare and analyze your retrieval runs.
+
 ## Naive RAG vs Contextual Retrieval
 
 This project includes a direct comparison between traditional (naive) RAG and Contextual Retrieval, following the methodology described by Anthropic. The results below show the improvements in retrieval quality and context-awareness when using contextualized chunking and retrieval.
